@@ -1,6 +1,7 @@
 from http.client import responses
 import os
 import asyncio
+from tkinter import N
 import traceback
 import requests
 
@@ -45,26 +46,17 @@ request_header = {
 
 
 class IEEE_scrapper():
-    def __init__(self, path, request):
+    def __init__(self, path, request_header):
         self.path = path
-        self.request = request
+        self.request_header = request_header
         self.doi_org_url = "https://doi.org/api/handles/"
 
-    """def __await__(self):
-        return self.async_init().__await__()
-
-    async def async_init(self):
-        self.browser = await launch(
-            headless=True, args=['--no-sandbox'],
-            executablePath=self.path
-        )
-        return self"""
-
-    async def get_page(self, doi):
-        self.page = await self.browser.newPage()
+    async def get_page(self, doi, browser):
+        page = await browser.newPage()
 
         doi_resolved_url = self.doi_org_url + doi
         response = requests.get(doi_resolved_url).json()
+
         if response["responseCode"] == 1:
             url = response["values"][0]["data"]["value"]
             url = os.path.join(url, "references")
@@ -74,40 +66,44 @@ class IEEE_scrapper():
             return 0
 
         try:
-            await self.page.goto(url, {'waitUntil': 'load'}, header=self.request)
+            await page.goto(url, {'waitUntil': 'load'}, header=self.request_header)
         except:
             print("err")
             traceback.print_exc()
         else:
-            print("ok")
-            return await self.page.content()
+            return await page.content()
         finally:
             print("close page")
-            await self.page.close()
+            await page.close()
 
     async def _scrapp_page(self, doi):
         """
             Manque l'envoi des données vers le dataset
 
         """
-        self.browser = await launch(
+        browser = await launch(
             headless=True, args=['--no-sandbox'],
             executablePath=self.path
         )
-        html_page = await self.get_page(doi)
-        await self.browser.close()
+        html_page = await self.get_page(doi, browser)
+        await browser.close()
+
+        if html_page is None:
+            return None
+
         soup = BeautifulSoup(html_page, "lxml")
 
         ref_list = soup.find_all("div", class_="reference-container")
-
         if len(ref_list) > 0:
-            print("got scrapping results")
+            ref_text_list = []
             for ref in ref_list:
                 ref_span = ref.find("span", class_=lambda x: x != "number")
                 ref_text = ref_span.text
-                print(ref_text)
+                ref_text_list.append(ref_text)
 
-            return ref_list
+            return ref_text_list
+        else:
+            return None
 
     async def _close(self):
         await self.browser.close()
