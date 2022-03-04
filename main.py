@@ -1,8 +1,10 @@
 import asyncio
 import time
 import re
+import json
 from difflib import SequenceMatcher
 import aiohttp
+import copy
 
 import paperswithcode
 
@@ -14,6 +16,8 @@ import ieee_scrapper
 # limitter le nombre de ref
 # rapport à conserver : 1 : 15 entre unm paper et ref
 
+
+# https://tenthousandmeters.com/blog/python-behind-the-scenes-12-how-asyncawait-works-in-python/
 
 """
     if paper.arxiv_id is not None:
@@ -94,7 +98,7 @@ class PaperGraphCreator():
         self.paper_template_dict = {
             "url_doi": None,
             "titre": None,
-            "authors": [None],
+            "authors": [],
             "date": str(None),
             "langue": None,
             "domaine_arxiv": None,
@@ -134,8 +138,9 @@ class PaperGraphCreator():
 
         result_ref = await result_ref.json()
 
-        if result_ref["status"] != "ok":
-            return
+        if result_ref["status"] != "ok" or \
+                len(result_ref["message"]["items"]) == 0:
+            return None
 
         result_ref_content = result_ref["message"]["items"][0]
 
@@ -146,22 +151,16 @@ class PaperGraphCreator():
 
         return result_ref_content
 
-    async def _parse_reference_list(self, ref_list, paper_doi, aiohttp_session, dataset_lock, async_queue):
+    async def _parse_reference_list(self, ref_list, doi,
+                                    aiohttp_session, dataset_lock, async_queue):
 
-        for ref in ref_list:
+        doi_ref_list = []
+        for ref in ref_list[:MAX_REFENCES]:
             if "DOI" in ref.keys():
                 ref_doi = ref["DOI"]
 
-                """ #TODO ajout à la liste"""
-                # await async_queue.put({
-                #    "doi": ref_doi,
-                #    "query": f"{CROSS_REF_API}/works/{ref_doi}"
-                # })
-
-                await dataset_lock.acquire()
-                self.dataset[paper_doi]["reference"].append(ref_doi)
-                dataset_lock.release()
-
+                """ #TODO ajout à la liste de requettes"""
+                doi_ref_list.append(ref_doi)
                 self.num_reference += 1
 
             elif "unstructured" in ref.keys():
@@ -170,82 +169,88 @@ class PaperGraphCreator():
                 result_ref_content = await self.retrieve_paper_from_title(
                     unstruct_title, aiohttp_session
                 )
+
                 if result_ref_content is None:
                     continue
 
                 if SequenceMatcher(None, result_ref_content["title"], unstruct_title).ratio() > 0.75:
-
-                    await dataset_lock.acquire()
-                    self.dataset[paper_doi]["reference"].append(
-                        result_ref_content["DOI"]
-                    )
-                    dataset_lock.release()
+                    doi_ref_list.append(result_ref_content["DOI"])
 
                     self.num_reference += 1
             '''
-                champ 
+                champ
                     ...["reference"][i]["article-title"]
                                         volume-title
             '''
+        await dataset_lock.acquire()
+        self.dataset[doi]["refence"] = doi_ref_list
+        dataset_lock.release()
+        print("- got : ", doi, " with ",
+              len(doi_ref_list), " references")
 
-    async def _scrapp_from_publisher_name(self, publisher_name, paper_doi, aiohttp_session, dataset_lock):
-        """
-            TODO: faire l'appel au scrapper en async et ajouter les données au dict
-        """
+    async def _scrapp_from_publisher_name(self, publisher_name, paper_doi,
+                                          aiohttp_session, dataset_lock):
 
         if publisher_name in self.known_publisher_list:
-            print("    peut scrapper publisher", publisher_name)
+            print("    (scrapper) peut scrapper publisher", publisher_name)
 
-            if publisher_name.strip() == "IEEE" or \
+            if publisher_name.strip() == "IEEE" or\
                     publisher_name.strip() == "Institute of Electrical and Electronics Engineers (IEEE)":
 
                 ref_list = await self.scrappers["IEEE"]._scrapp_page(paper_doi)
                 if ref_list is None:
                     return None
 
-                print(paper_doi, " scrapped ", len(ref_list))
-                for i, reference_name in enumerate(ref_list):
-                    print("retrieve ref scrapped ", i)
+                doi_ref_list = []
 
+                for i, reference_name in enumerate(ref_list):
                     """
-                        si recherche trop vague : 
+                        si recherche trop vague :
                             : le titre est soit:  entre quotes, sinon en italique
 
                             > TODO: implem aussi les titres en italique si pas de quotes
                     """
                     reference_name = re.findall(r'"(.+)"', reference_name)
-
                     if len(reference_name) == 0:
-                        return
+                        continue
 
                     result = await self.retrieve_paper_from_title(
                         reference_name[0], aiohttp_session
                     )
+
                     if result is None:
                         continue
 
-                    if self._check_title_match(result["title"][0], reference_name[0], 0.75):
-                        if result is not None:
-                            await dataset_lock.acquire()
-                            self.dataset[paper_doi]["reference"].append(
-                                result["DOI"]
-                            )
-                            dataset_lock.release()
-                            self.num_reference += 1
+                    matched = self._check_title_match(
+                        result["title"][0], reference_name[0], 0.75)
+
+                    if matched is True:
+                        doi_ref_list.append(result["DOI"])
+                        self.num_reference += 1
+
+                print("(scrapper) - got : ", paper_doi, " with ",
+                      len(doi_ref_list), " references")
+
+                await dataset_lock.acquire()
+                self.dataset[paper_doi]["reference"] = doi_ref_list
+                dataset_lock.release()
 
         else:
             self.new_publishers_list.add(publisher_name)
-            print("publisher_name ", self.new_publishers_list)
+            print("--> new publisher_name ", publisher_name)
 
     async def _parse_author_list(self, author_list, paper_doi, dataset_lock):
-        await dataset_lock.acquire()
+        author_list = []
         for author in author_list:
-            self.dataset[paper_doi]["authors"].append(
+            author_list.append(
                 {
                     "name": author["given"]+" "+author["family"],
                     "affiliation": author["affiliation"]
                 }
             )
+
+        await dataset_lock.acquire()
+        self.dataset[paper_doi]["authors"] = author_list
         dataset_lock.release()
 
     def _check_title_match(self, title_1, title_2, thresh):
@@ -253,14 +258,13 @@ class PaperGraphCreator():
         t2 = self.clean_title_string(title_2)
         score = SequenceMatcher(None, t1, t2).ratio()
 
-        print("\nsearch : ", score, "\n", t1, "\n", t2, "\n")
         if score >= thresh:
             return True
         else:
             return False
 
     async def collect_paper(self, paper_info, aiohttp_session, dataset_lock, async_queue):
-        paper_dict = self.paper_template_dict.copy()
+        paper_dict = copy.deepcopy(self.paper_template_dict)
 
         query = f"{CROSS_REF_API}/works?" +\
             f"query.bibliographic={paper_info.title.replace('&', ' and ')}" +\
@@ -289,8 +293,16 @@ class PaperGraphCreator():
 
         if matched:
             paper_doi = result["DOI"]
-            print("parsing    ", paper_doi)
-            print("> ", paper_doi, end=" ")
+            paper_dict["titre"] = result["title"][0]
+
+            if "URL" in result.keys():
+                paper_dict["url_doi"] = result["URL"]
+
+            paper_dict["date"] = str(
+                paper_info.published) if paper_info.published is not None else None
+
+            paper_dict["conference"]["nom"] = paper_info.conference
+
             self.num_papers += 1
 
             await dataset_lock.acquire()
@@ -300,14 +312,11 @@ class PaperGraphCreator():
 
             if "reference" in result.keys():
                 reference_list = result["reference"]
-                print(" reflist ", len(reference_list), end=" ")
+
                 await self._parse_reference_list(
-                    reference_list, paper_doi, aiohttp_session, dataset_lock, async_queue
+                    reference_list, paper_doi, aiohttp_session,
+                    dataset_lock, async_queue
                 )
-                await dataset_lock.acquire()
-                print(" got ref ", len(
-                    self.dataset[paper_doi]["reference"]))
-                dataset_lock.release()
 
             elif "publisher" in result.keys():
                 publisher = result["publisher"]
@@ -316,13 +325,14 @@ class PaperGraphCreator():
                     await self._scrapp_from_publisher_name(
                         publisher, paper_doi, aiohttp_session, dataset_lock
                     )
-                    print("done scrapping")
 
             elif "URL" in result.keys():
                 print("peut etre scrapper ", result["URL"])
 
             if "author" in result.keys():
-                await self._parse_author_list(result["author"], paper_doi, dataset_lock)
+                await self._parse_author_list(
+                    result["author"], paper_doi, dataset_lock
+                )
 
     async def _start_acquisition(self, papers_chunk):
 
@@ -331,13 +341,14 @@ class PaperGraphCreator():
 
             dataset_lock = asyncio.Lock()
             async_queue = asyncio.Queue()
-
             corountines_list = []
+
             for paper in papers_chunk.results:
                 corountines_list.append(
                     self.collect_paper(
                         paper, session, dataset_lock, async_queue
                     )
+
                 )
             await asyncio.gather(*corountines_list)
             await async_queue.join()
@@ -346,7 +357,7 @@ class PaperGraphCreator():
         pwc_num_papers = self.pwc_client.paper_list(
             page=1, items_per_page=1).count
 
-        for page_num in range(2528, pwc_num_papers // self.max_item):
+        for page_num in range(1001, pwc_num_papers // self.max_item):
             papers_chunk = self.pwc_client.paper_list(
                 page=page_num, items_per_page=MAX_ITEM
             )
@@ -359,6 +370,8 @@ class PaperGraphCreator():
             print(
                 f"\n___________ chunk completed : papers: {len(self.dataset)} ref:{self.num_reference}"
             )
+            with open('dataset.json', "w") as f:
+                f.write(json.dumps(self.dataset))
 
 
 if __name__ == '__main__':
@@ -367,8 +380,10 @@ if __name__ == '__main__':
     CROSS_REF_API = "https://api.crossref.org"
     MAIL_TO = "lulud41@gmail.com"
 
-    MAX_ITEM = 20
-    GET_TIMEOUT = 5
+    MAX_ITEM = 50
+    GET_TIMEOUT = 20
+
+    MAX_REFENCES = 70
 
     KNOWN_PUBLISHER_LIST = [
         "springer", "IEEE", "research_gate",
@@ -379,7 +394,7 @@ if __name__ == '__main__':
 
     app = PaperGraphCreator(
         ARXIV_API, CROSS_REF_API, MAIL_TO, KNOWN_PUBLISHER_LIST,
-        max_item=MAX_ITEM, get_time_out=GET_TIMEOUT, scrapp=False
+        max_item=MAX_ITEM, get_time_out=GET_TIMEOUT, scrapp=True
     )
     app.start()
     print(time.perf_counter() - t1)
