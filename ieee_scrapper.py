@@ -1,8 +1,8 @@
-from http.client import responses
 import os
 import asyncio
-from tkinter import N
 import traceback
+from async_timeout import timeout
+import pyppeteer
 import requests
 
 from pyppeteer import launch
@@ -46,34 +46,41 @@ request_header = {
 
 
 class IEEE_scrapper():
-    def __init__(self, path, request_header):
+    def __init__(self, path, request_header, timeout=5):
         self.path = path
         self.request_header = request_header
         self.doi_org_url = "https://doi.org/api/handles/"
+        self.timeout = timeout
 
     async def get_page(self, doi, browser):
         page = await browser.newPage()
 
         doi_resolved_url = self.doi_org_url + doi
-        response = requests.get(doi_resolved_url).json()
+        try:
+            response = requests.get(
+                doi_resolved_url, timeout=self.timeout
+            ).json()
+
+        except requests.exceptions.Timeout:
+            print("doi timeout")
+            return
 
         if response["responseCode"] == 1:
             url = response["values"][0]["data"]["value"]
             url = os.path.join(url, "references")
-
-            print(doi, " -> ", url)
         else:
             return 0
 
         try:
             await page.goto(url, {'waitUntil': 'load'}, header=self.request_header)
+        except pyppeteer.errors.TimeoutError:
+            return
         except:
             print("err")
             traceback.print_exc()
         else:
             return await page.content()
         finally:
-            print("close page")
             await page.close()
 
     async def _scrapp_page(self, doi):
@@ -103,10 +110,11 @@ class IEEE_scrapper():
 
             return ref_text_list
         else:
+            print('scrap failed')
             return None
 
     async def _close(self):
-        await self.browser.close()
+        return
 
     def close(self):
         asyncio.run(self._close())
