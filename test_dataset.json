@@ -1,0 +1,90 @@
+[
+    {
+        "doi": "10.1198/004017005000000166",
+        "url_doi": "http://dx.doi.org/10.1198/004017005000000166",
+        "title": "An algebraic criterion of the Darboux integrability of differential-difference equations and systems",
+        "authors": [
+            {  
+            "name": "Lucien DEROUET",
+            "organisation": "Université de Technologie de Troyes"
+            },
+            {
+            "name": "Antoine PURIER",
+            "organisation": "Université de Technologie de Troyes"
+            }
+            ],
+        "date": "2021-06-16",
+        "language": "English",
+        "arxiv_domain": "Computer Vision",
+        "conference": {
+            "name": "Grande conférence de l'enfer",
+            "location": "Troyes",
+            "date": "2022-03-05"
+            },
+        "publisher": "Springer",
+        "key_words": ["maths","equations","Darboux"],
+        "references": [
+            "10.1070/rm2001v056n01abeh000357",
+            "10.5802/afst.153",
+            "10.1109/tit.2020.2977166"
+            ]
+    },
+    {
+        "doi": "10.1109/tit.2020.2977166",
+        "url_doi": "http://dx.doi.org/10.1109/tit.2020.2977166",
+        "title": "An Algebraic-Geometric Approach for Linear Regression Without Correspondences",
+        "authors": [
+            {  
+            "name": "Wael BILDSTEIN",
+            "organisation": "Université de Technologie de Troyes"
+            },
+            {
+            "name": "Laura DAUDE",
+            "organisation": "Université de Technologie de Troyes"
+            }
+        ],
+        "date": "2018-10-12",
+        "language": "French",
+        "arxiv_domain": "Mathematics",
+        "conference": {
+            "name": "Conférence Anuelle sur la Régression Linéaire",
+            "location": "Paris",
+            "date": "2022-01-01"
+            },
+        "publisher": "IEEE",
+        "key_words": ["algebra", "linear regression", "maths"],
+        "references": [
+            "10.1198/004017005000000166",
+            "10.1109/cvpr.2015.7298946" 
+            ]
+    },
+    {
+        "doi": "10.1109/tit.2020.000000",
+        "url_doi": "http://dx.doi.org/10.1109/tit.2020.000000",
+        "title": "Noise classification",
+        "authors": [
+            {  
+            "name": "Anthony PIERRE",
+            "organisation": "Université de Technologie de Troyes"
+            },
+            {
+            "name": "Eva GAYRAUD",
+            "organisation": "Université de Technologie de Troyes"
+            }
+        ],
+        "date": "2019-11-12",
+        "language": "French",
+        "arxiv_domain": "Deep Learning",
+        "conference": {
+            "name": "Conférence Anuelle sur la classification sonore",
+            "location": "Paris",
+            "date": "2022-03-03"
+            },
+        "publisher": "Springer",
+        "key_words": ["acoustics","cnn"],
+        "references": [
+            "10.1198/004017005000000166",
+            "10.1109/cvpr.2015.75555555" 
+            ]
+    }
+]
