@@ -1,29 +1,15 @@
 import os
 import asyncio
 import traceback
-from async_timeout import timeout
-import pyppeteer
 import requests
 
-from pyppeteer import launch
+import pyppeteer
 from bs4 import BeautifulSoup
-
-"""
-
-        > utliliser pypeteer
-        > mettre le request header
-
-        https://stackoverflow.com/questions/63440994/requests-html-render-returns-access-denied
-
-
-        > faire classe Scrapper abstraite, et implémenter les meme fonctions
-            dans chaque sous classe
-
-    """
 
 
 EXECUTABLE_PATH = "/usr/bin/chromium-browser"
 
+# request header afin de charcher le site IEEE (qui est basé sur JS donc pas de get normal possible)
 request_header = {
     "GET": '/rest/document/9683325/references HTTP/1.1',
     "Host": 'ieeexplore.ieee.org',
@@ -46,13 +32,35 @@ request_header = {
 
 
 class IEEE_scrapper():
+    """classe implémentant un scrapper du site de l'éditeur IEEE.
+       Le scrapping consiste à récupérer la liste des références d'un papier, à partir de son DOI.
+
+       Le site IEEE utilisant JS, la page doit être chargée à partir d'un navigateur headless (usage de pyppeteer)
+    """
+
     def __init__(self, path, request_header, timeout=5):
+        """
+        Args:
+            path (str): chemin du navigateur
+            request_header (str): header pour les requetes GET
+            timeout (int, optional): timeout avant abandon de requete. Defaults to 5.
+        """
         self.path = path
         self.request_header = request_header
         self.doi_org_url = "https://doi.org/api/handles/"
         self.timeout = timeout
 
     async def get_page(self, doi, browser):
+        """Traduit le DOI d'un papier en lien vers le site de l'éditeur, via le site doi.org
+            La page est ensuite chargé dans le navigateur
+
+        Args:
+            doi (_type_): _description_
+            browser (_type_): _description_
+
+        Returns:
+            str: contenu de la page
+        """
         page = await browser.newPage()
 
         doi_resolved_url = self.doi_org_url + doi
@@ -63,6 +71,9 @@ class IEEE_scrapper():
 
         except requests.exceptions.Timeout:
             print("doi timeout")
+            return
+        except:
+            print("doi unkown error")
             return
 
         if response["responseCode"] == 1:
@@ -84,11 +95,15 @@ class IEEE_scrapper():
             await page.close()
 
     async def _scrapp_page(self, doi):
-        """
-            Manque l'envoi des données vers le dataset
+        """scrapping des références du papier
 
+        Args:
+            doi (str): DOI du papier
+
+        Returns:
+            list[str]: liste des titre des références, affichées sur la page du papier, sur le site IEEE
         """
-        browser = await launch(
+        browser = await pyppeteer.launch(
             headless=True, args=['--no-sandbox'],
             executablePath=self.path
         )
@@ -113,12 +128,6 @@ class IEEE_scrapper():
             print('scrap failed')
             return None
 
-    async def _close(self):
-        return
-
-    def close(self):
-        asyncio.run(self._close())
-
     def scrapp_page(self, url):
         asyncio.run(self._scrapp_page(url))
 
@@ -127,6 +136,5 @@ if __name__ == "__main__":
     s = IEEE_scrapper(
         EXECUTABLE_PATH, request_header
     )
-    #url = "https://ieeexplore.ieee.org/document/7780459"
     doi = "10.23919/eusipco.2017.8081399"
     s.scrapp_page(doi)

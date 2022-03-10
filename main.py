@@ -9,17 +9,37 @@ import aiohttp
 import traceback
 import paperswithcode
 import feedparser
-import tea_client
 
 import ieee_scrapper
 
 """
-    @authors
-        DEROUET Lucien
-        PURIRER Anthone
-    Programme principal pour la collecte des données
 
-    lancer
+    Programme pour la collecte de données sur des publications scientifiques.
+    Collecte de données sur Papers With Code (API), puis complète les données 
+    avec l'API Crossref et l'api Arxiv. Si besoin, les références du papier
+    sont scrappées sur le site IEEE.
+
+    lancer le script ()
+    
+        / ! \  ________________________   / ! \   ________________________ / ! \ 
+        
+                            Testé uniquement sur linux et Python 3.8.10
+                            
+                            Usage de asyncio, donc python >= 3.5 obligatoire
+    
+        / ! \  ________________________   / ! \   ________________________ / ! \
+
+            Pour le scrapping, le navigateur chromium est utilisé en mode headless, 
+                donner le chemin du navigateur dans la variable IEEE_SCRAPPER_EXECUTABLE_PATH
+                : si déjà installé, peut obtenir le chemin avec : $ whereis chromium-browser
+
+              Pour désactiver le scrapping, mettre la variable 'scrapp' à False dans le constructeur
+                de la classe PaperGraphCreator 
+
+            
+
+        $ pip install -r requirements.txt
+        $ python3 main.py
 
 
 """
@@ -27,14 +47,40 @@ import ieee_scrapper
 
 class PaperGraphCreator():
     def __init__(self, arxiv_api, cross_ref_api, mail_to, known_publisher_list,
-                 max_item=50, get_time_out=5, scrapp=True,):
+                 max_item=50, get_timeout=5, scrapp=True, max_tcp_conn=50,
+                 max_reference=50):
+        """
+
+        Args:
+            arxiv_api (str): url de l'api arxiv
+
+            cross_ref_api (str): url de l'api crossref
+
+            mail_to (str): addresse mail de lucien derouet (pour bénéficier d'une 
+                meilleure qualité de service pour l'api crossref)
+
+            known_publisher_list (list[str]): liste des éditeurs connus, pour lesquels in scrapper est implémenté
+                 actuellement seulement IEEE
+
+            max_item (int, optional): Nombre papiers à récupérer par requête Arxiv. Defaults to 50.
+
+            get_timeout (int, optional): timeout avant abandon de la requête. Defaults to 5.
+
+            scrapp (bool, optional): True pour permettre le scrapping. Defaults to True.
+
+            max_tcp_conn (int, optional): Nombre max de connections TCP permises simultanément. Defaults to 50.
+
+            max_reference (int, optional): Nombre max de références prises en compte pour un papier. Defaults to 50.
+        """
 
         self.pwc_client = paperswithcode.PapersWithCodeClient()
         self.arxiv_api = arxiv_api
         self.cross_ref_api = cross_ref_api
         self.mail_to = mail_to
         self.max_item = max_item
-        self.get_time_out = get_time_out
+        self.get_timeout = get_timeout
+        self.max_tcp_conn = max_tcp_conn
+        self.max_reference = max_reference
         self.known_publisher_list = known_publisher_list
         self.new_publishers_list = {}
 
@@ -42,7 +88,7 @@ class PaperGraphCreator():
         if scrapp is True:
             self.scrappers = {
                 "IEEE": ieee_scrapper.IEEE_scrapper(
-                    ieee_scrapper.EXECUTABLE_PATH,
+                    IEEE_SCRAPPER_EXECUTABLE_PATH,
                     ieee_scrapper.request_header
                 ),
                 "Springer": None,
@@ -76,16 +122,26 @@ class PaperGraphCreator():
         return t
 
     async def async_get_request(self, query, aiohttp_session, is_json=True):
+        """lance une requête GET avec aiohttp
+
+        Args:
+            query (str): requête
+            aiohttp_session : session aiohttp
+            is_json (bool, optional): _description_. Defaults to True.
+
+        Returns:
+            : réponses de la requête, None si échec, ou un dictionnaire / xml si succès
+        """
         try:
             result = await aiohttp_session.request(method="GET", url=query)
         except asyncio.exceptions.TimeoutError as e:
-            print("timeout")
+            # print("timeout")
             return None
         except aiohttp.client_exceptions.ServerDisconnectedError as e:
-            print("server disconnected")
+            #print("server disconnected")
             return None
         except aiohttp.client_exceptions.ClientOSError as e:
-            print("reset by peer")
+            #print("reset by peer")
             return None
         except:
             print("unkown error :", traceback.print_exc())
@@ -122,10 +178,19 @@ class PaperGraphCreator():
         return result
 
     async def retrieve_paper_from_title(self, title, aiohttp_session):
+        """Collecte les informations sur un papier à partir de son titre, ou chaîne de caractère
+
+        Args:
+            title (str): titre ou str décrivant le papier
+            aiohttp_session (_type_): session
+
+        Returns:
+            _type_: None ou dictionnaire json 
+        """
 
         query = f"{CROSS_REF_API}/works?" +\
             f"query.bibliographic={title.replace('&', ' and ')}" +\
-            f"&select=DOI,URL,title,subject,publisher,reference,author,event&rows=1" +\
+            f"&select=DOI,URL,title,subject,publisher,reference,author,event,created,deposited&rows=1" +\
             f"&mailto={MAIL_TO}"
 
         result_ref = await self.async_get_request(query, aiohttp_session)
@@ -133,6 +198,14 @@ class PaperGraphCreator():
         return result_ref
 
     async def parse_paper_dict(self, paper, aiohttp_session, dataset_lock):
+        """Parse les informations d'un papier, cherche la classification sur arxiv, et collecte 
+            la liste des références
+
+        Args:
+            paper (dict): dict décrivant le papier
+            aiohttp_session (_type_): session
+            dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+        """
         doi = paper["DOI"]
         if doi in self.dataset.keys():
             return
@@ -152,7 +225,7 @@ class PaperGraphCreator():
         ref_doi_list = []
         if "reference" in paper.keys():
             references_list = paper["reference"]
-            for ref in references_list[:MAX_REFERENCES]:
+            for ref in references_list[:self.max_reference]:
                 if "DOI" in ref.keys():
                     ref_doi_list.append(ref["DOI"])
 
@@ -165,9 +238,21 @@ class PaperGraphCreator():
               len(ref_doi_list), " references")
 
     async def _parse_references_list(self, ref_list, aiohttp_session, dataset_lock):
+        """Traite la liste des références d'un papier. La liste peut contenir des 
+            DOI ou les titre / chaine de caractère non structurée
+
+
+        Args:
+            ref_list (list[str]): liste des références
+            aiohttp_session (_type_):session
+             dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+
+        Returns:
+            list[str]: la liste des DOIs de chaque référence
+        """
 
         doi_ref_list = []
-        for ref in ref_list[:MAX_REFERENCES]:
+        for ref in ref_list[:self.max_reference]:
             if "DOI" in ref.keys():
                 ref_doi = ref["DOI"]
                 doi_ref_list.append(ref_doi)
@@ -196,6 +281,19 @@ class PaperGraphCreator():
 
     async def _scrapp_from_publisher_name(self, publisher_name, paper_doi,
                                           aiohttp_session, dataset_lock):
+        """Si l'api crossref ne donne pas la liste des références d'un papier,
+           la liste est obtenue en scrapant le site de l'éditeur, si un scraper
+           est implémenté. Le seul disponible actuellement est IEEE
+
+        Args:
+            publisher_name (str): nom de l'éditeur du papier
+            paper_doi (str): doi du papier
+            aiohttp_session (_type_): session
+            dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+
+        Returns:
+            list[str]: liste des DOIs de chaque référence
+        """
 
         if publisher_name not in self.known_publisher_list:
             if publisher_name not in self.new_publishers_list.keys():
@@ -236,6 +334,18 @@ class PaperGraphCreator():
             return doi_ref_list
 
     def _check_title_match(self, title_1, title_2, thresh):
+        """l'API crossref est solicitée avec le titre d'un papier. Pour valider
+        le résultat, il faut mesurer la similitude entre le titre demandé et le 
+        titre du papier trouvé par l'api
+
+        Args:
+            title_1 (str): titre du papier demandé
+            title_2 (str): titre du papier renvoyé par l'api
+            thresh (float): seuil entre 0 et 1, mesurant la similitude des titres
+
+        Returns:
+            bool: vrai ou faux, si les titres sont suffisement similaires ou pas
+        """
         t1 = self.clean_title_string(title_1)
         t2 = self.clean_title_string(title_2)
         score = SequenceMatcher(None, t1, t2).ratio()
@@ -246,6 +356,17 @@ class PaperGraphCreator():
             return False
 
     def _parse_result_info(self, result_dict, paper_info):
+        """Parse les données d'un dictionnaire décrivant un papier
+        et crée un dict à partir du template puis le rempli
+
+        Args:
+            result_dict (dict): dict obtenu à partir de crossref
+            paper_info (~ namespace): objet venant de paper with code
+
+        Returns:
+            dict: Dict suivant le template, prêt à être intégré au dataset
+                    mais les références sont absentes du dict
+        """
         paper_dict = copy.deepcopy(self.paper_template_dict)
 
         paper_dict["title"] = result_dict["title"][0]
@@ -296,6 +417,15 @@ class PaperGraphCreator():
         return paper_dict
 
     async def get_arxiv_info(self, paper_info, aiohttp_session, dataset_lock, paper_doi, by_title=False):
+        """Requête vers l'api arxiv, pour chercher la classification d'un papier
+
+        Args:
+            paper_info (dict): dict décriavant le papier
+            aiohttp_session (_type_): session
+            dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+            paper_doi (str): DOI du papier
+            by_title (bool, optional): la recherche se fait soit par titre soi par arxiv_id. Defaults to False.
+        """
         if by_title is False:
             query = f"{ARXIV_API}/query?id_list={paper_info.arxiv_id}"
             xml = await self.async_get_request(query, aiohttp_session, is_json=False)
@@ -323,6 +453,13 @@ class PaperGraphCreator():
             dataset_lock.release()
 
     async def collect_paper_from_doi(self, paper_doi, aiohttp_session, dataset_lock):
+        """Requête vers l'api Crossref à partir du DOI d'un papier
+
+        Args:
+            paper_doi (str):
+            aiohttp_session (_type_): session
+            dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+        """
         if paper_doi in self.dataset.keys():
             return
 
@@ -335,7 +472,7 @@ class PaperGraphCreator():
 
         query = f"{CROSS_REF_API}/works?" +\
             f"query.bibliographic={title.replace('&', ' and ')}" +\
-            f"&select=DOI,URL,title,subject,publisher,reference,author,event&rows=1" +\
+            f"&select=DOI,URL,title,subject,publisher,reference,author,event,created,deposited&rows=1" +\
             f"&mailto={MAIL_TO}"
 
         result = await self.async_get_request(query, aiohttp_session)
@@ -347,10 +484,22 @@ class PaperGraphCreator():
             await self.parse_paper_dict(result, aiohttp_session, dataset_lock)
 
     async def collect_paper(self, paper_info, aiohttp_session, dataset_lock):
+        """Collecte l'ensemble des infos sur un papier, ainsi que les infos sur ses références, et ajoute
+            le tout au dataset
+                Recherche du papier via l'API crossref, recherche de la classification via l'API arxiv.
+                Scrappe les références si elle ne sont pas données, et que l'éditeur est connu.
+                Collecte les informations relatives à chaque référence.
+                Ajoute les infos au dataset
+
+        Args:
+            paper_info (dict): dict décrivant un papier, informations partielles et sommaires, venant de papers with code
+            aiohttp_session (_type_): session
+            dataset_lock (asyncio.Lock): pour l'accès concurent au dataset
+        """
 
         query = f"{CROSS_REF_API}/works?" +\
             f"query.bibliographic={paper_info.title.replace('&', ' and ')}" +\
-            f"&select=DOI,URL,title,subject,publisher,reference,author,event&rows=1" +\
+            f"&select=DOI,URL,title,subject,publisher,reference,author,event,created,deposited&rows=1" +\
             f"&mailto={MAIL_TO}"
 
         result = await self.async_get_request(query, aiohttp_session)
@@ -394,10 +543,17 @@ class PaperGraphCreator():
             print("- got pwc paper : ", paper_doi, " with ", l, " referencess")
 
     async def _start_acquisition(self, papers_chunk):
+        """Lance la collecte d'informations à partir d'un bloc de papiers, fourni par l'api papers with code
+            La collecte des infos de ce bloc de papier est faite en asynchrone
+            Une fois la collecte terminée, le programme passe à un bloc suivant.
 
-        timeout = aiohttp.ClientTimeout(total=self.get_time_out)
+        Args:
+            papers_chunk: objet comportant le titre + quelques infos sur un bloc de papiers, venant de papers with code
+        """
 
-        connector = aiohttp.TCPConnector(limit=MAX_TCP_CONNECTIONS)
+        timeout = aiohttp.ClientTimeout(total=self.get_timeout)
+
+        connector = aiohttp.TCPConnector(limit=self.max_tcp_conn)
         async with aiohttp.ClientSession(timeout=timeout, connector=connector) as aiohttp_session:
 
             dataset_lock = asyncio.Lock()
@@ -410,35 +566,40 @@ class PaperGraphCreator():
             await asyncio.gather(*corountines_list)
 
     def start(self):
+        """Itère sur l'ensemble des papiers disponibles via l'api papers with code, bloc par bloc.
+            Pour chaque bloc, les infos de chaque papiers et leurs références sont collectées, et 
+            ajouter au dataset.
+        """
         pwc_num_papers = self.pwc_client.paper_list(
             page=1, items_per_page=1).count
 
         for page_num in range(30, pwc_num_papers // self.max_item):
             try:
                 papers_chunk = self.pwc_client.paper_list(
-                    page=page_num, items_per_page=MAX_ITEM
+                    page=page_num, items_per_page=self.max_item
                 )
             except:
                 print("failed to load chunk")
                 continue
+
             print("\n___________ page num : ", page_num)
             self.time_start = time.perf_counter()
 
-            asyncio.run(
-                self._start_acquisition(papers_chunk)
-            )
-
+            asyncio.run(self._start_acquisition(papers_chunk))
             print("\n__________ publisher_name \n", end=" ")
+
             for k in self.new_publishers_list.keys():
                 print(k, self.new_publishers_list[k])
-            print(
-                f"\n___________ chunk completed : papers: {len(self.dataset)} ref:{self.num_references}"
-            )
 
-            with open('dataset.json', "bw") as f:
+            print(
+                f"\n___________ chunk completed : papers: {len(self.dataset)} ref:{self.num_references}")
+
+            # entre chaque bloc, les donénes sont écrites
+            with open('dataset_test.json', "bw") as f:
                 f.write(
-                    json.dumps(self.dataset, ensure_ascii=False).encode(
-                        "utf-8")
+                    json.dumps(
+                        self.dataset, ensure_ascii=False
+                    ).encode("utf-8")
                 )
                 print(
                     f"{self.num_papers} papers and {self.num_references} refs in {time.perf_counter() - self.time_start} sec")
@@ -446,6 +607,8 @@ class PaperGraphCreator():
         self.exit()
 
     def exit(self):
+        """Fin de l'acquisition, écriture des données
+        """
         with open('dataset.json', "bw") as f:
             f.write(
                 json.dumps(self.dataset, ensure_ascii=False).encode("utf-8")
@@ -466,27 +629,20 @@ if __name__ == '__main__':
     CROSS_REF_API = "https://api.crossref.org"
     MAIL_TO = "lulud41@gmail.com"
 
-    MAX_ITEM = 100
+    MAX_ITEM = 5
     MAX_TCP_CONNECTIONS = 40
     GET_TIMEOUT = 5
     MAX_REFERENCES = 50
 
-    """
-        
-        max 50 :  241 pap, 3059 ref 98 sec, timeout 5    : 2.45 / sec
-        max 200 : tcp 50, time 5 , 361 pap, 7700 ref, 157 secs  : 2.29 / sec
+    IEEE_SCRAPPER_EXECUTABLE_PATH = "/usr/bin/chromium-browser"
 
-
-        max 20 : tcp 50, time 5,  : 0.6/sec
-        max 400 : tcp 50, time 5,
-
-    """
     KNOWN_PUBLISHER_LIST = [
         "IEEE", "Institute of Electrical and Electronics Engineers (IEEE)"
     ]
 
     app = PaperGraphCreator(
         ARXIV_API, CROSS_REF_API, MAIL_TO, KNOWN_PUBLISHER_LIST,
-        max_item=MAX_ITEM, get_time_out=GET_TIMEOUT, scrapp=True)
+        max_item=MAX_ITEM, get_timeout=GET_TIMEOUT, scrapp=True,
+        max_tcp_conn=MAX_TCP_CONNECTIONS, max_reference=MAX_REFERENCES)
 
     app.start()
