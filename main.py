@@ -629,7 +629,7 @@ if __name__ == '__main__':
     CROSS_REF_API = "https://api.crossref.org"
     MAIL_TO = "lulud41@gmail.com"
 
-    MAX_ITEM = 5
+    MAX_ITEM = 50
     MAX_TCP_CONNECTIONS = 40
     GET_TIMEOUT = 5
     MAX_REFERENCES = 50
